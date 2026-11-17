@@ -1,4 +1,4 @@
-/* ArcPlay guest v0.7: full keyboard + mouse over low-latency WebRTC channels. */
+/* ArcPlay guest v0.9: full keyboard + mouse over low-latency WebRTC channels. */
 'use strict';
 const $ = selector => document.querySelector(selector);
 const pressed = new Set();
@@ -11,6 +11,7 @@ let connecting=false, joining=false, offerPending=false, lastOfferAt=0;
 let pendingIce=[], helloTimer=null, safetyTimer=null, pingTimer=null, errorTimer=null;
 let motionTimer=null, pendingMotion=false, motionSeq=0, totalMX=0, totalMY=0, lastMotionAt=0;
 let channelConnected=false, peerConnected=false, currentCode='';
+let roomServiceReady=false, hostFound=false, offerReceived=false, lastIceState='new';
 let soundEnabled=false;
 const video=$('#video');
 const videoBox=$('#video-box');
@@ -34,7 +35,13 @@ function failConnection(title,description){
 }
 function armTimeout(){
   clearTimeout(errorTimer);
-  errorTimer=setTimeout(()=>{if(!connected)failConnection('No se pudo abrir la partida','La conexión está tardando demasiado. Comprueba que tu amigo siga compartiendo el juego y pulsa Reintentar.');},30000);
+  errorTimer=setTimeout(()=>{
+    if(connected)return;
+    if(!roomServiceReady)failConnection('Servicio de conexión inaccesible','No hemos podido abrir la sala. Comprueba la conexión a Internet y prueba con otra red.');
+    else if(!hostFound&&!offerReceived)failConnection('No encontramos la partida','Confirma que el anfitrión sigue compartiendo, que el enlace no ha caducado y que ambos usáis ArcPlay actualizado.');
+    else if(!peerConnected)failConnection('La red está bloqueando la conexión','Encontramos la partida, pero las dos redes no han conseguido comunicarse. Prueba a usar datos móviles o una red diferente.');
+    else failConnection('No llega el vídeo o los controles','Se localizó el anfitrión, pero faltan datos de la partida. Recarga la pestaña del juego y vuelve a intentarlo.');
+  },30000);
 }
 function maybeReady(){
   if(connected||!channelConnected||!videoReady||!peerConnected||control?.readyState!=='open')return;
@@ -61,6 +68,7 @@ function resetInputs(){
   pressed.clear();mouseMask=0;snapshot();
 }
 function stopControls(){
+  sendControl({t:'input-active',on:false});
   resetInputs();playing=false;
   if(document.pointerLockElement)document.exitPointerLock();
   document.body.classList.remove('pointer-locked');
@@ -72,7 +80,7 @@ function stopControls(){
 function setControls(on){
   if(!connected)return;
   if(!on){stopControls();return;}
-  playing=true;$('#toggle').classList.add('playing');$('#toggle-label').textContent='Desactivar controles';
+  playing=true;sendControl({t:'input-active',on:true});snapshot();$('#toggle').classList.add('playing');$('#toggle-label').textContent='Desactivar controles';
   $('#lock-mouse').disabled=false;
   $('#keyboard-focus').focus({preventScroll:true});
   video.play().catch(()=>{});
@@ -135,22 +143,28 @@ async function openPeer(){
     }else if(ch.label==='arcplay-move')movement=ch;
   };
   conn.onicecandidate=e=>{if(e.candidate&&pc===conn)signal({t:'candidate',candidate:e.candidate.toJSON()});};
+  conn.oniceconnectionstatechange=()=>{if(pc===conn)lastIceState=conn.iceConnectionState;};
   conn.onconnectionstatechange=()=>{
     if(pc!==conn)return;
     if(conn.connectionState==='connected'){peerConnected=true;maybeReady();}
     else if(conn.connectionState==='disconnected'){
       peerConnected=false;connected=false;stopControls();document.body.classList.remove('is-playing');
       setConnection('Reconectando a la partida...','La conexión se ha interrumpido.');armTimeout();
-    }else if(conn.connectionState==='failed')failConnection('Conexión interrumpida','No ha sido posible establecer una conexión directa. Prueba a cambiar de red o reintenta.');
+    }else if(conn.connectionState==='failed')failConnection('Conexión bloqueada','El anfitrión se ha encontrado, pero no se ha establecido el enlace de vídeo. Reintenta o prueba otra conexión a Internet.');
   };
 }
 async function onSignal(msg){
   if(msg.to&&msg.to!==myId)return;
+  if(msg.t==='present'){
+    hostFound=true;
+    if(!offerReceived&&!connected)setConnection('Anfitrión encontrado','Estableciendo conexión entre los dos navegadores.');
+    return;
+  }
   if(msg.t==='offer'){
     if(!msg.description||msg.description.type!=='offer'||typeof msg.from!=='string')return;
     if(offerPending||(pc&&pc.connectionState==='connected'&&connected))return;
     if(pc&&pc.signalingState==='have-remote-offer'&&Date.now()-lastOfferAt<4000)return;
-    offerPending=true;hostId=msg.from;lastOfferAt=Date.now();
+    offerPending=true;hostFound=true;offerReceived=true;hostId=msg.from;lastOfferAt=Date.now();
     try{
       setConnection('Conectando a la partida...','Sincronizando vídeo y controles.');
       await openPeer();
@@ -168,7 +182,7 @@ async function onSignal(msg){
     closePeer();failConnection('La partida ha terminado','El anfitrión ha finalizado la sesión.');
   }
 }
-function sayHello(){if(bus&&!connected)void bus.send({t:'hello',from:myId}).catch(()=>{});}
+function sayHello(){if(bus&&!connected)void bus.send({t:'hello',from:myId,v:8}).catch(()=>{});}
 async function join(){
   if(joining)return;
   let code;
@@ -177,12 +191,12 @@ async function join(){
   joining=true;currentCode=code;$('#join-error').textContent='';$('#join-game').disabled=true;
   try{
     clearTimers();bus?.close();bus=null;
-    closePeer();hostId='';pendingIce=[];
+    closePeer();hostId='';pendingIce=[];roomServiceReady=false;hostFound=false;offerReceived=false;lastIceState='new';
     setConnection('Conectando a la partida...','Buscando a tu amigo y preparando la transmisión.');
     topStatus('Conectando');armTimeout();
     bus=await ArcSignal.SignalBus.connect(code,'guest',message=>{
       void onSignal(message).catch(()=>failConnection('Error de conexión','No se ha podido completar la conexión. Pulsa Reintentar.'));
-    },ready=>{if(ready&&!connected){sayHello();topStatus('Buscando anfitrión');}});
+    },ready=>{roomServiceReady=ready;if(ready&&!connected){sayHello();topStatus('Buscando anfitrión');}});
     sayHello();helloTimer=setInterval(sayHello,1300);
     $('#join-panel').classList.add('hidden');
   }catch(e){failConnection('No se pudo conectar',e.message||'Revisa tu conexión e inténtalo de nuevo.');$('#join-game').disabled=false;}
