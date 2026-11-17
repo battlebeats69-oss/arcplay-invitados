@@ -1,12 +1,18 @@
-/* ArcPlay v1.1 — encrypted signaling over shared public MQTT-over-WebSocket services.
+/* ArcPlay v1.2 — resilient encrypted signaling: 443-first, delayed alternate ports.
    This file is shared by the host offscreen document and the guest extension page.
    No application server, accounts, external JS, or API keys are required. */
 (function (global) {
   'use strict';
-  const ENDPOINTS = [
+  // Standard HTTPS port 443 is more widely reachable than non-standard WebSocket ports.
+  // These independent test services do NOT forward messages to one another; both
+  // participants broadcast on all available routes and deduplicate by message id.
+  const PRIMARY_ENDPOINTS = [
+    'wss://mqtt.eclipseprojects.io/mqtt',
+    'wss://api.sondahub.com/mqtt'
+  ];
+  const FALLBACK_ENDPOINTS = [
     'wss://broker.emqx.io:8084/mqtt',
-    'wss://broker.connectmq.com:8084/mqtt',
-    'wss://mqtt.eclipseprojects.io/mqtt'
+    'wss://broker.connectmq.com:8084/mqtt'
   ];
   const VERSION = 'AP2';
   const utf8 = new TextEncoder();
@@ -57,8 +63,16 @@
       try { ws = new WebSocket(this.url, ['mqtt']); }
       catch (_) { this.reconnect(); return; }
       this.ws = ws; ws.binaryType = 'arraybuffer';
-      const timeout = setTimeout(() => { if (ws.readyState !== WebSocket.OPEN || !this.ready) ws.close(); }, 9000);
-      ws.onopen = () => { try { ws.send(connectPacket(this.clientId)); } catch { ws.close(); } };
+      // If the TLS/WebSocket handshake stalls, stop this attempt and retry.
+      // Chrome may report closing a still-CONNECTING socket in DevTools; that is
+      // a transport failure indication, not an ICE/TURN or video error.
+      const timeout = setTimeout(() => {
+        if (this.ws === ws && !this.closed && !this.ready && ws.readyState < WebSocket.CLOSING) ws.close();
+      }, 15000);
+      ws.onopen = () => {
+        if (this.closed || this.ws !== ws) { ws.close(); return; }
+        try { ws.send(connectPacket(this.clientId)); } catch { ws.close(); }
+      };
       ws.onmessage = event => {
         let data;
         try { data = new Uint8Array(event.data); } catch { return; }
@@ -78,6 +92,8 @@
             try { ws.send(subscribePacket(this.topic)); } catch { ws.close(); }
           } else if (type === 9) {
             if (body.length < 3 || body[2] === 0x80) { ws.close(); return; }
+            if (this.ws !== ws || this.closed) return;
+            clearTimeout(timeout);
             this.ready = true; this.attempt = 0; this.change();
             for (const item of this.pending.splice(0)) {
               if (Date.now() - item.at < 12000) this.publish(item.payload);
@@ -94,7 +110,8 @@
       ws.onerror = () => {};
       ws.onclose = () => {
         clearTimeout(timeout); clearInterval(this.pingTimer); this.pingTimer = null;
-        if (this.ws === ws) { this.ready = false; this.change(); }
+        if (this.ws !== ws) return;
+        this.ready = false; this.change();
         this.reconnect();
       };
       this.pingTimer = setInterval(() => {
@@ -137,10 +154,20 @@
     constructor(room, key, role, onMessage, onStatus) {
       this.room = room; this.key = key; this.role = role; this.onMessage = onMessage;
       this.onStatus = onStatus; this.relays = []; this.seen = new Set(); this.closed = false;
+      this.fallbackTimer = null; this.peerSeen = false;
       this.topic = `arcplay/v2/${room}/${role === 'host' ? 'h' : 'g'}`;
     }
     start() {
-      for (const url of ENDPOINTS) this.relays.push(new MqttRelay(url, this.topic, text => this.receive(text), () => this.onStatus(this.relays.some(r => r.ready))));
+      const add = url => this.relays.push(new MqttRelay(url, this.topic, text => this.receive(text),
+        () => this.onStatus(this.relays.some(r => r.ready))));
+      for (const url of PRIMARY_ENDPOINTS) add(url);
+      // No unnecessarily opened extra connections after the peer is found.
+      // When the first two public services cannot find each other, enable two
+      // independent alternate paths (may be blocked on restricted networks).
+      this.fallbackTimer = setTimeout(() => {
+        this.fallbackTimer = null;
+        if (!this.closed && !this.peerSeen) for (const url of FALLBACK_ENDPOINTS) add(url);
+      }, 8000);
     }
     async send(message) {
       if (this.closed) return;
@@ -168,10 +195,18 @@
         if (Math.abs(Date.now() - msg.ts) > 120000 || this.seen.has(msg.id)) return;
         this.seen.add(msg.id);
         if (this.seen.size > 500) this.seen.delete(this.seen.values().next().value);
+        this.peerSeen = true;
+        if (this.fallbackTimer !== null) { clearTimeout(this.fallbackTimer); this.fallbackTimer = null; }
         this.onMessage(msg);
       } catch { /* Public channels can contain unrelated or malformed packets. */ }
     }
-    close() { this.closed = true; for (const relay of this.relays) relay.close(); this.relays.length = 0; }
+    close() {
+      this.closed = true;
+      if (this.fallbackTimer !== null) clearTimeout(this.fallbackTimer);
+      this.fallbackTimer = null;
+      for (const relay of this.relays) relay.close();
+      this.relays.length = 0;
+    }
   }
   global.ArcSignal = {SignalBus, makeCode, parseCode};
 })(globalThis);

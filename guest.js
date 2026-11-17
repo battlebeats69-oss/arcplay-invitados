@@ -1,4 +1,4 @@
-/* ArcPlay guest v1.1: full keyboard + mouse over low-latency WebRTC channels. */
+/* ArcPlay guest v1.2: full keyboard + mouse over low-latency WebRTC channels. */
 'use strict';
 const $ = selector => document.querySelector(selector);
 const pressed = new Set();
