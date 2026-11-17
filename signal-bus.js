@@ -1,4 +1,4 @@
-/* ArcPlay v0.9 — encrypted signaling over shared public MQTT-over-WebSocket services.
+/* ArcPlay v1.1 — encrypted signaling over shared public MQTT-over-WebSocket services.
    This file is shared by the host offscreen document and the guest extension page.
    No application server, accounts, external JS, or API keys are required. */
 (function (global) {

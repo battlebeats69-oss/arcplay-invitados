@@ -1,18 +1,18 @@
-/* ArcPlay guest v0.9: full keyboard + mouse over low-latency WebRTC channels. */
+/* ArcPlay guest v1.1: full keyboard + mouse over low-latency WebRTC channels. */
 'use strict';
 const $ = selector => document.querySelector(selector);
 const pressed = new Set();
 const mouseButtons = ArcInput.buttons;
-const iceServers = [{urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']}];
+let sessionIce=ArcIce.DEFAULTS;
 const myId = crypto.randomUUID();
 let bus=null, pc=null, control=null, movement=null, hostId='';
 let connected=false, playing=false, videoReady=false, mouseMask=0;
 let connecting=false, joining=false, offerPending=false, lastOfferAt=0;
 let pendingIce=[], helloTimer=null, safetyTimer=null, pingTimer=null, errorTimer=null;
-let motionTimer=null, pendingMotion=false, motionSeq=0, totalMX=0, totalMY=0, lastMotionAt=0;
+let motionTimer=null, motionRecoveryTimer=null, motionRepeats=0, pendingMotion=false, motionSeq=0, totalMX=0, totalMY=0, lastMotionAt=0;
 let channelConnected=false, peerConnected=false, currentCode='';
 let roomServiceReady=false, hostFound=false, offerReceived=false, lastIceState='new';
-let soundEnabled=false;
+let soundEnabled=false, latencyTimer=null;
 const video=$('#video');
 const videoBox=$('#video-box');
 
@@ -39,7 +39,7 @@ function armTimeout(){
     if(connected)return;
     if(!roomServiceReady)failConnection('Servicio de conexión inaccesible','No hemos podido abrir la sala. Comprueba la conexión a Internet y prueba con otra red.');
     else if(!hostFound&&!offerReceived)failConnection('No encontramos la partida','Confirma que el anfitrión sigue compartiendo, que el enlace no ha caducado y que ambos usáis ArcPlay actualizado.');
-    else if(!peerConnected)failConnection('La red está bloqueando la conexión','Encontramos la partida, pero las dos redes no han conseguido comunicarse. Prueba a usar datos móviles o una red diferente.');
+    else if(!peerConnected)failConnection('Las redes no consiguen comunicarse','Encontramos la partida, pero no se abrió el canal WebRTC. Prueba otra red o pide al anfitrión activar la compatibilidad de conexión. (NET-ICE)');
     else failConnection('No llega el vídeo o los controles','Se localizó el anfitrión, pero faltan datos de la partida. Recarga la pestaña del juego y vuelve a intentarlo.');
   },30000);
 }
@@ -52,6 +52,29 @@ function maybeReady(){
   $('#toggle-label').textContent='Activar controles';
   topStatus('Conectado',true);
   video.play().catch(()=>{});
+}
+// WebRTC playback latency: a best-effort hint, not a guaranteed delay.
+// React to network jitter instead of forcing an unrealistically tiny buffer.
+function setPlaybackBuffer(conn, ms){
+  for(const receiver of conn.getReceivers()){
+    try{
+      if('jitterBufferTarget' in receiver)receiver.jitterBufferTarget=ms;
+      else if('playoutDelayHint' in receiver)receiver.playoutDelayHint=ms/1000;
+    }catch{} // Unsupported/disabled on some browsers.
+  }
+}
+async function tunePlaybackBuffer(conn){
+  if(pc!==conn||conn.connectionState!=='connected')return;
+  try{
+    const stats=await conn.getStats();
+    let maxJitter=0;
+    for(const r of stats.values()){
+      if(r.type==='inbound-rtp'&&(r.kind==='video'||r.kind==='audio')&&Number.isFinite(r.jitter))
+        maxJitter=Math.max(maxJitter,r.jitter);
+    }
+    const targetMs=maxJitter>.035?100:maxJitter>.018?65:35;
+    setPlaybackBuffer(conn,targetMs);
+  }catch{}
 }
 function sendControl(obj){
   if(control?.readyState!=='open'||control.bufferedAmount>10000)return;
@@ -68,6 +91,10 @@ function resetInputs(){
   pressed.clear();mouseMask=0;snapshot();
 }
 function stopControls(){
+  if(motionRecoveryTimer!==null){clearTimeout(motionRecoveryTimer);motionRecoveryTimer=null;}
+  if(motionTimer!==null){clearTimeout(motionTimer);motionTimer=null;}
+  pendingMotion=false;motionRepeats=0;
+  sendControl({t:'pointer-mode',locked:false});
   sendControl({t:'input-active',on:false});
   resetInputs();playing=false;
   if(document.pointerLockElement)document.exitPointerLock();
@@ -80,16 +107,18 @@ function stopControls(){
 function setControls(on){
   if(!connected)return;
   if(!on){stopControls();return;}
-  playing=true;sendControl({t:'input-active',on:true});snapshot();$('#toggle').classList.add('playing');$('#toggle-label').textContent='Desactivar controles';
+  motionSeq=0;totalMX=0;totalMY=0;lastMotionAt=0;
+  playing=true;sendControl({t:'input-active',on:true});sendControl({t:'pointer-mode',locked:!!document.pointerLockElement});snapshot();$('#toggle').classList.add('playing');$('#toggle-label').textContent='Desactivar controles';
   $('#lock-mouse').disabled=false;
   $('#keyboard-focus').focus({preventScroll:true});
   video.play().catch(()=>{});
 }
 function clearTimers(){
-  for(const t of [safetyTimer,pingTimer,helloTimer,motionTimer,errorTimer])clearTimeout(t);
-  safetyTimer=pingTimer=helloTimer=motionTimer=errorTimer=null;
+  for(const t of [safetyTimer,pingTimer,helloTimer,motionTimer,motionRecoveryTimer,errorTimer])clearTimeout(t);
+  safetyTimer=pingTimer=helloTimer=motionTimer=motionRecoveryTimer=errorTimer=null;
 }
 function closePeer(){
+  if(latencyTimer!==null){clearInterval(latencyTimer);latencyTimer=null;}
   stopControls();
   clearInterval(safetyTimer);clearInterval(pingTimer);safetyTimer=pingTimer=null;
   for(const ch of [control,movement])try{ch?.close();}catch{}
@@ -111,11 +140,17 @@ video.addEventListener('playing',onVideoFrame);
 async function openPeer(){
   const earlyCandidates=pendingIce;
   closePeer();pendingIce=earlyCandidates;
-  const conn=new RTCPeerConnection({iceServers,bundlePolicy:'max-bundle'});pc=conn;
+  const conn=new RTCPeerConnection({iceServers:sessionIce,bundlePolicy:'max-bundle'});pc=conn;
   const media=new MediaStream();
   conn.ontrack=e=>{
     if(pc!==conn)return;
     if(!media.getTracks().includes(e.track))media.addTrack(e.track);
+    if(e.receiver){
+      try{
+        if('jitterBufferTarget' in e.receiver)e.receiver.jitterBufferTarget=35;
+        else if('playoutDelayHint' in e.receiver)e.receiver.playoutDelayHint=.035;
+      }catch{}
+    }
     video.srcObject=media;
     video.play().catch(()=>{});
   };
@@ -146,11 +181,18 @@ async function openPeer(){
   conn.oniceconnectionstatechange=()=>{if(pc===conn)lastIceState=conn.iceConnectionState;};
   conn.onconnectionstatechange=()=>{
     if(pc!==conn)return;
-    if(conn.connectionState==='connected'){peerConnected=true;maybeReady();}
+    if(conn.connectionState==='connected'){peerConnected=true;maybeReady();setPlaybackBuffer(conn,35);
+      if(latencyTimer!==null)clearInterval(latencyTimer);
+      latencyTimer=setInterval(()=>void tunePlaybackBuffer(conn),3000);
+    }
     else if(conn.connectionState==='disconnected'){
+      if(latencyTimer!==null){clearInterval(latencyTimer);latencyTimer=null;}
       peerConnected=false;connected=false;stopControls();document.body.classList.remove('is-playing');
       setConnection('Reconectando a la partida...','La conexión se ha interrumpido.');armTimeout();
-    }else if(conn.connectionState==='failed')failConnection('Conexión bloqueada','El anfitrión se ha encontrado, pero no se ha establecido el enlace de vídeo. Reintenta o prueba otra conexión a Internet.');
+    }else if(conn.connectionState==='failed'){
+      if(latencyTimer!==null){clearInterval(latencyTimer);latencyTimer=null;}
+      failConnection('Conexión de red bloqueada','La invitación funciona, pero no hay una ruta de vídeo entre vuestras redes. Prueba datos móviles o el modo de compatibilidad del anfitrión. (NET-ICE)');
+    }
   };
 }
 async function onSignal(msg){
@@ -165,6 +207,7 @@ async function onSignal(msg){
     if(offerPending||(pc&&pc.connectionState==='connected'&&connected))return;
     if(pc&&pc.signalingState==='have-remote-offer'&&Date.now()-lastOfferAt<4000)return;
     offerPending=true;hostFound=true;offerReceived=true;hostId=msg.from;lastOfferAt=Date.now();
+    sessionIce=ArcIce.merge(msg.network);
     try{
       setConnection('Conectando a la partida...','Sincronizando vídeo y controles.');
       await openPeer();
@@ -191,7 +234,7 @@ async function join(){
   joining=true;currentCode=code;$('#join-error').textContent='';$('#join-game').disabled=true;
   try{
     clearTimers();bus?.close();bus=null;
-    closePeer();hostId='';pendingIce=[];roomServiceReady=false;hostFound=false;offerReceived=false;lastIceState='new';
+    closePeer();hostId='';pendingIce=[];roomServiceReady=false;hostFound=false;offerReceived=false;lastIceState='new';sessionIce=ArcIce.DEFAULTS;
     setConnection('Conectando a la partida...','Buscando a tu amigo y preparando la transmisión.');
     topStatus('Conectando');armTimeout();
     bus=await ArcSignal.SignalBus.connect(code,'guest',message=>{
@@ -226,23 +269,43 @@ function position(e){
   return {x:ArcInput.clamp(x,0,1),y:ArcInput.clamp(y,0,1)};
 }
 let cursorPosition={x:.5,y:.5};
+// Keep only the freshest state. Cumulative deltas recover dropped unordered packets.
+// Never queue a long tail of outdated mouse moves behind congestion.
 function sendMove(){
-  motionTimer=null;if(!pendingMotion||!playing||movement?.readyState!=='open')return;
+  motionTimer=null;
+  if(!pendingMotion||!playing||movement?.readyState!=='open')return;
+  if(movement.bufferedAmount>768){
+    // Retry the newest cumulative state instead of sending stale snapshots.
+    motionTimer=setTimeout(sendMove,4);
+    return;
+  }
   pendingMotion=false;
-  if(movement.bufferedAmount>1000)return;
   lastMotionAt=performance.now();
   try{movement.send(JSON.stringify({t:'move',s:++motionSeq,ax:totalMX,ay:totalMY,x:cursorPosition.x,y:cursorPosition.y,locked:!!document.pointerLockElement}));}catch{}
+  // Two short repeats repair a lost final mouse packet without retransmitting
+  // old movement: host applies cumulative position differences only once.
+  if(motionRecoveryTimer===null&&motionRepeats<2){
+    motionRecoveryTimer=setTimeout(()=>{
+      motionRecoveryTimer=null;
+      if(!playing||!connected)return;
+      motionRepeats++;pendingMotion=true;sendMove();
+    },38);
+  }
 }
 function queueMove(e){
   if(!playing||!connected)return;
+  if(motionRecoveryTimer!==null){clearTimeout(motionRecoveryTimer);motionRecoveryTimer=null;}
+  motionRepeats=0;
   const locked=!!document.pointerLockElement;
   if(locked){totalMX+=e.movementX||0;totalMY+=e.movementY||0;}
   else cursorPosition=position(e);
   pendingMotion=true;
   if(!motionTimer){
     const delta=performance.now()-lastMotionAt;
-    if(delta>=8)sendMove();
-    else motionTimer=setTimeout(sendMove,Math.max(1,8-delta));
+    // FPS: up to 120 Hz. Normal cursor: up to 60 Hz to save CPU.
+    const minInterval=locked?8:16;
+    if(delta>=minInterval)sendMove();
+    else motionTimer=setTimeout(sendMove,Math.max(1,minInterval-delta));
   }
 }
 videoBox.addEventListener('mousemove',e=>{if(!document.pointerLockElement)queueMove(e);});
@@ -283,6 +346,8 @@ videoBox.addEventListener('wheel',e=>{
 document.addEventListener('pointerlockchange',()=>{
   const locked=!!document.pointerLockElement;
   document.body.classList.toggle('pointer-locked',locked);
+  // Reliable and immediate: hide the cursor on the HOST tab even at rest.
+  if(connected)sendControl({t:'pointer-mode',locked:locked&&playing});
   $('#lock-mouse').textContent=locked?'Liberar ratón':'Capturar ratón';
   if(!locked){resetInputs();pendingMotion=false;}
 });
