@@ -1,17 +1,7 @@
-# ArcPlay · Cliente invitado
+# ArcPlay — cliente invitado
 
-Esta web permite entrar desde el navegador en la partida que comparte un amigo mediante ArcPlay, **sin instalar nada**.
+Página pública para entrar en una partida de ArcPlay sin instalar extensiones. Comparte vídeo y audio del juego del anfitrión por WebRTC y envía controles de teclado y ratón solo cuando el invitado los activa.
 
-## Cómo funciona
+Para publicar la versión 1.3 debes **compilar el proyecto** y subir el contenido de `dist/web-invitado` a GitHub Pages. La biblioteca Trystero se incluye en el archivo local `trystero.bundle.js`, no desde un CDN.
 
-El anfitrión abre el juego en Chrome y comparte un enlace privado. El invitado lo abre, espera a que se conecte el vídeo y pulsa **Activar controles**. Para juegos FPS también puede capturar el ratón; **Esc** lo libera.
-
-La pantalla de conexión permanece hasta que la partida esté lista. Si se produce un error, aparece la opción de reintentar. Al empezar, el juego ocupa prácticamente toda la ventana.
-
-## Publicación
-
-Publica el contenido de esta carpeta en la raíz del repositorio usando GitHub Pages.
-
-Sitio previsto: https://battlebeats69-oss.github.io/arcplay-invitados/
-
-Proyecto en beta: algunos juegos o redes pueden no ser compatibles. No garantizamos un tiempo de respuesta específico.
+El anfitrión debe usar la **extensión de la misma versión**. ArcPlay no dispone de servidor propio: los participantes se encuentran mediante relays públicos Nostr. Ciertas redes pueden requerir TURN para el vídeo.

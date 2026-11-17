@@ -1,30 +1,22 @@
-/* ArcPlay guest v1.2: full keyboard + mouse over low-latency WebRTC channels. */
+/* ArcPlay guest v1.3 — Trystero/Nostr, media and input over one P2P connection. */
 'use strict';
-const $ = selector => document.querySelector(selector);
-const pressed = new Set();
-const mouseButtons = ArcInput.buttons;
-let sessionIce=ArcIce.DEFAULTS;
-const myId = crypto.randomUUID();
-let bus=null, pc=null, control=null, movement=null, hostId='';
-let connected=false, playing=false, videoReady=false, mouseMask=0;
-let connecting=false, joining=false, offerPending=false, lastOfferAt=0;
-let pendingIce=[], helloTimer=null, safetyTimer=null, pingTimer=null, errorTimer=null;
-let motionTimer=null, motionRecoveryTimer=null, motionRepeats=0, pendingMotion=false, motionSeq=0, totalMX=0, totalMY=0, lastMotionAt=0;
-let channelConnected=false, peerConnected=false, currentCode='';
-let roomServiceReady=false, hostFound=false, offerReceived=false, lastIceState='new';
-let soundEnabled=false, latencyTimer=null;
-const video=$('#video');
-const videoBox=$('#video-box');
-
+const $=s=>document.querySelector(s);
+const pressed=new Set(),mouseButtons=ArcInput.buttons;
+let room=null,control=null,movement=null,feedbackAction=null,hostId='';
+let fastMotion=null;
+let connected=false,playing=false,videoReady=false,mouseMask=0;
+let joining=false,channelConnected=false,peerConnected=false,currentCode='';
+let hostFound=false,roomServiceReady=false,offerReceived=false;
+let errorTimer=null,safetyTimer=null,pingTimer=null,latencyTimer=null;
+let motionTimer=null,motionRecoveryTimer=null,motionRepeats=0,pendingMotion=false,motionSeq=0,totalMX=0,totalMY=0,lastMotionAt=0;
+let soundEnabled=false;
+const video=$('#video'),videoBox=$('#video-box');
 function topStatus(text,on=false){$('#top-status').textContent=text;$('#dot').classList.toggle('on',on);}
 function setConnection(title,description,failed=false){
-  const layer=$('#connection-screen');
-  layer.hidden=false;layer.classList.toggle('error',failed);
+  const layer=$('#connection-screen');layer.hidden=false;layer.classList.toggle('error',failed);
   $('#connection-eyebrow').textContent=failed?'NO SE PUDO CONECTAR':'INVITACIÓN RECIBIDA';
-  $('#connection-title').textContent=title;
-  $('#connection-description').textContent=description;
-  $('#connection-actions').hidden=!failed;
-  layer.setAttribute('role',failed?'alert':'status');
+  $('#connection-title').textContent=title;$('#connection-description').textContent=description;
+  $('#connection-actions').hidden=!failed;layer.setAttribute('role',failed?'alert':'status');
 }
 function dismissConnection(){const layer=$('#connection-screen');layer.hidden=true;layer.classList.remove('error');}
 function failConnection(title,description){
@@ -37,44 +29,17 @@ function armTimeout(){
   clearTimeout(errorTimer);
   errorTimer=setTimeout(()=>{
     if(connected)return;
-    if(!roomServiceReady)failConnection('Servicio de conexión inaccesible','No hemos podido abrir la sala. Comprueba la conexión a Internet y prueba con otra red.');
-    else if(!hostFound&&!offerReceived)failConnection('No encontramos la partida','Confirma que el anfitrión sigue compartiendo, que el enlace no ha caducado y que ambos usáis ArcPlay actualizado.');
-    else if(!peerConnected)failConnection('Las redes no consiguen comunicarse','Encontramos la partida, pero no se abrió el canal WebRTC. Prueba otra red o pide al anfitrión activar la compatibilidad de conexión. (NET-ICE)');
-    else failConnection('No llega el vídeo o los controles','Se localizó el anfitrión, pero faltan datos de la partida. Recarga la pestaña del juego y vuelve a intentarlo.');
-  },30000);
+    if(!hostFound)failConnection('No encontramos la partida','El anfitrión no aparece en la sala. Comprueba la invitación y que tenga ArcPlay v1.3.');
+    else if(!peerConnected)failConnection('Conexión P2P bloqueada','Las redes no pueden comunicarse. Prueba otra red o un servicio TURN. (NET-ICE)');
+    else failConnection('No llega el vídeo','La conexión de control se abrió, pero todavía no hay vídeo. Comprueba que el anfitrión siga compartiendo.');
+  },35000);
 }
 function maybeReady(){
   if(connected||!channelConnected||!videoReady||!peerConnected||control?.readyState!=='open')return;
   connected=true;clearTimeout(errorTimer);errorTimer=null;
-  dismissConnection();
-  document.body.classList.add('is-playing');
-  $('#toggle').disabled=false;
-  $('#toggle-label').textContent='Activar controles';
-  topStatus('Conectado',true);
-  video.play().catch(()=>{});
-}
-// WebRTC playback latency: a best-effort hint, not a guaranteed delay.
-// React to network jitter instead of forcing an unrealistically tiny buffer.
-function setPlaybackBuffer(conn, ms){
-  for(const receiver of conn.getReceivers()){
-    try{
-      if('jitterBufferTarget' in receiver)receiver.jitterBufferTarget=ms;
-      else if('playoutDelayHint' in receiver)receiver.playoutDelayHint=ms/1000;
-    }catch{} // Unsupported/disabled on some browsers.
-  }
-}
-async function tunePlaybackBuffer(conn){
-  if(pc!==conn||conn.connectionState!=='connected')return;
-  try{
-    const stats=await conn.getStats();
-    let maxJitter=0;
-    for(const r of stats.values()){
-      if(r.type==='inbound-rtp'&&(r.kind==='video'||r.kind==='audio')&&Number.isFinite(r.jitter))
-        maxJitter=Math.max(maxJitter,r.jitter);
-    }
-    const targetMs=maxJitter>.035?100:maxJitter>.018?65:35;
-    setPlaybackBuffer(conn,targetMs);
-  }catch{}
+  dismissConnection();document.body.classList.add('is-playing');
+  $('#toggle').disabled=false;$('#toggle-label').textContent='Activar controles';
+  topStatus('Conectado',true);video.play().catch(()=>{});
 }
 function sendControl(obj){
   if(control?.readyState!=='open'||control.bufferedAmount>10000)return;
@@ -83,7 +48,7 @@ function sendControl(obj){
 function snapshot(){sendControl({t:'snapshot',k:[...pressed],b:mouseMask});}
 function sendEdge(kind,value,down){
   if(kind==='key')sendControl({t:'edge',kind,code:value,down});
-  else {sendControl({t:'edge',kind,button:value,down,x:cursorPosition.x,y:cursorPosition.y,locked:!!document.pointerLockElement});}
+  else sendControl({t:'edge',kind,button:value,down,x:cursorPosition.x,y:cursorPosition.y,locked:!!document.pointerLockElement});
 }
 function resetInputs(){
   for(const code of pressed)sendEdge('key',code,false);
@@ -94,162 +59,128 @@ function stopControls(){
   if(motionRecoveryTimer!==null){clearTimeout(motionRecoveryTimer);motionRecoveryTimer=null;}
   if(motionTimer!==null){clearTimeout(motionTimer);motionTimer=null;}
   pendingMotion=false;motionRepeats=0;
-  sendControl({t:'pointer-mode',locked:false});
-  sendControl({t:'input-active',on:false});
+  sendControl({t:'pointer-mode',locked:false});sendControl({t:'input-active',on:false});
   resetInputs();playing=false;
   if(document.pointerLockElement)document.exitPointerLock();
-  document.body.classList.remove('pointer-locked');
-  $('#toggle').classList.remove('playing');
+  document.body.classList.remove('pointer-locked');$('#toggle').classList.remove('playing');
   $('#toggle-label').textContent=connected?'Activar controles':'Esperando conexión';
-  $('#lock-mouse').disabled=true;
-  $('#lock-mouse').textContent='Capturar ratón';
+  $('#lock-mouse').disabled=true;$('#lock-mouse').textContent='Capturar ratón';
 }
 function setControls(on){
   if(!connected)return;
   if(!on){stopControls();return;}
   motionSeq=0;totalMX=0;totalMY=0;lastMotionAt=0;
-  playing=true;sendControl({t:'input-active',on:true});sendControl({t:'pointer-mode',locked:!!document.pointerLockElement});snapshot();$('#toggle').classList.add('playing');$('#toggle-label').textContent='Desactivar controles';
-  $('#lock-mouse').disabled=false;
-  $('#keyboard-focus').focus({preventScroll:true});
+  playing=true;sendControl({t:'input-active',on:true});
+  sendControl({t:'pointer-mode',locked:!!document.pointerLockElement});
+  snapshot();$('#toggle').classList.add('playing');$('#toggle-label').textContent='Desactivar controles';
+  $('#lock-mouse').disabled=false;$('#keyboard-focus').focus({preventScroll:true});
   video.play().catch(()=>{});
 }
 function clearTimers(){
-  for(const t of [safetyTimer,pingTimer,helloTimer,motionTimer,motionRecoveryTimer,errorTimer])clearTimeout(t);
-  safetyTimer=pingTimer=helloTimer=motionTimer=motionRecoveryTimer=errorTimer=null;
+  for(const t of [errorTimer,safetyTimer,pingTimer,latencyTimer,motionTimer,motionRecoveryTimer])clearTimeout(t);
+  errorTimer=safetyTimer=pingTimer=latencyTimer=motionTimer=motionRecoveryTimer=null;
 }
 function closePeer(){
-  if(latencyTimer!==null){clearInterval(latencyTimer);latencyTimer=null;}
-  stopControls();
-  clearInterval(safetyTimer);clearInterval(pingTimer);safetyTimer=pingTimer=null;
-  for(const ch of [control,movement])try{ch?.close();}catch{}
-  control=movement=null;
-  if(pc)try{pc.close();}catch{}pc=null;
+  stopControls();clearInterval(safetyTimer);clearInterval(pingTimer);clearInterval(latencyTimer);
+  safetyTimer=pingTimer=latencyTimer=null;
+  try{fastMotion?.close();}catch{}fastMotion=null;
+  control=movement=feedbackAction=null;hostId='';
   video.srcObject=null;video.classList.remove('ready');
-  videoReady=false;channelConnected=false;peerConnected=false;connected=false;
-  $('#ping').textContent='— ms';
-  $('#toggle').disabled=true;
+  videoReady=channelConnected=peerConnected=connected=false;
+  $('#ping').textContent='— ms';$('#toggle').disabled=true;
   document.body.classList.remove('is-playing');
 }
-function signal(data){if(bus)void bus.send({...data,from:myId,to:hostId}).catch(()=>{});}
 function onVideoFrame(){
   if(video.readyState>=2){videoReady=true;video.classList.add('ready');$('#waiting').hidden=true;maybeReady();}
 }
 video.addEventListener('loadeddata',onVideoFrame);
 video.addEventListener('playing',onVideoFrame);
-
-async function openPeer(){
-  const earlyCandidates=pendingIce;
-  closePeer();pendingIce=earlyCandidates;
-  const conn=new RTCPeerConnection({iceServers:sessionIce,bundlePolicy:'max-bundle'});pc=conn;
-  const media=new MediaStream();
-  conn.ontrack=e=>{
-    if(pc!==conn)return;
-    if(!media.getTracks().includes(e.track))media.addTrack(e.track);
-    if(e.receiver){
-      try{
-        if('jitterBufferTarget' in e.receiver)e.receiver.jitterBufferTarget=35;
-        else if('playoutDelayHint' in e.receiver)e.receiver.playoutDelayHint=.035;
-      }catch{}
-    }
-    video.srcObject=media;
-    video.play().catch(()=>{});
-  };
-  conn.ondatachannel=e=>{
-    if(pc!==conn)return;
-    const ch=e.channel;
-    if(ch.label==='arcplay-control'){
-      control=ch;
-      ch.onopen=()=>{
-        if(pc!==conn)return;
-        channelConnected=true;
-        safetyTimer=setInterval(()=>{if(playing)snapshot();},110);
-        pingTimer=setInterval(()=>{if(ch.readyState==='open'&&ch.bufferedAmount<10000)sendControl({t:'ping',n:performance.now()});},950);
-        maybeReady();
-      };
-      ch.onclose=()=>{
-        if(pc!==conn)return;
-        channelConnected=false;connected=false;stopControls();
-        if(conn.connectionState!=='failed'){setConnection('Reconectando a la partida...','Recuperando vídeo y controles.');armTimeout();}
-      };
-      ch.onmessage=evt=>{try{
-        const msg=JSON.parse(evt.data);
-        if(msg.t==='pong'&&typeof msg.n==='number'&&Number.isFinite(msg.n))$('#ping').textContent=Math.round(performance.now()-msg.n)+' ms';
-      }catch{}};
-    }else if(ch.label==='arcplay-move')movement=ch;
-  };
-  conn.onicecandidate=e=>{if(e.candidate&&pc===conn)signal({t:'candidate',candidate:e.candidate.toJSON()});};
-  conn.oniceconnectionstatechange=()=>{if(pc===conn)lastIceState=conn.iceConnectionState;};
-  conn.onconnectionstatechange=()=>{
-    if(pc!==conn)return;
-    if(conn.connectionState==='connected'){peerConnected=true;maybeReady();setPlaybackBuffer(conn,35);
-      if(latencyTimer!==null)clearInterval(latencyTimer);
-      latencyTimer=setInterval(()=>void tunePlaybackBuffer(conn),3000);
-    }
-    else if(conn.connectionState==='disconnected'){
-      if(latencyTimer!==null){clearInterval(latencyTimer);latencyTimer=null;}
-      peerConnected=false;connected=false;stopControls();document.body.classList.remove('is-playing');
-      setConnection('Reconectando a la partida...','La conexión se ha interrumpido.');armTimeout();
-    }else if(conn.connectionState==='failed'){
-      if(latencyTimer!==null){clearInterval(latencyTimer);latencyTimer=null;}
-      failConnection('Conexión de red bloqueada','La invitación funciona, pero no hay una ruta de vídeo entre vuestras redes. Prueba datos móviles o el modo de compatibilidad del anfitrión. (NET-ICE)');
+function channel(action){
+  let pending=0;
+  return {
+    readyState:'open',get bufferedAmount(){return pending;},
+    send(value){
+      if(!room||!hostId)return;
+      const size=value.length;
+      pending+=size;
+      void action.send(JSON.parse(value),{target:hostId}).catch(()=>{}).finally(()=>{pending=Math.max(0,pending-size);});
     }
   };
 }
-async function onSignal(msg){
-  if(msg.to&&msg.to!==myId)return;
-  if(msg.t==='present'){
-    hostFound=true;
-    if(!offerReceived&&!connected)setConnection('Anfitrión encontrado','Estableciendo conexión entre los dos navegadores.');
-    return;
-  }
-  if(msg.t==='offer'){
-    if(!msg.description||msg.description.type!=='offer'||typeof msg.from!=='string')return;
-    if(offerPending||(pc&&pc.connectionState==='connected'&&connected))return;
-    if(pc&&pc.signalingState==='have-remote-offer'&&Date.now()-lastOfferAt<4000)return;
-    offerPending=true;hostFound=true;offerReceived=true;hostId=msg.from;lastOfferAt=Date.now();
-    sessionIce=ArcIce.merge(msg.network);
-    try{
-      setConnection('Conectando a la partida...','Sincronizando vídeo y controles.');
-      await openPeer();
-      await pc.setRemoteDescription(msg.description);
-      await pc.setLocalDescription(await pc.createAnswer());
-      signal({t:'answer',description:pc.localDescription});
-      for(const candidate of pendingIce)try{await pc.addIceCandidate(candidate);}catch{}
-      pendingIce=[];
-    }finally{offerPending=false;}
-  }else if(msg.t==='candidate'&&msg.candidate){
-    if(hostId&&msg.from!==hostId)return;
-    if(pc?.remoteDescription)try{await pc.addIceCandidate(msg.candidate);}catch{}
-    else if(pendingIce.length<100)pendingIce.push(msg.candidate);
-  }else if(msg.t==='bye'&&msg.from===hostId){
-    closePeer();failConnection('La partida ha terminado','El anfitrión ha finalizado la sesión.');
-  }
+function configurePeer(userId,actions){
+  if(hostId&&hostId!==userId)return;
+  hostId=userId;hostFound=true;peerConnected=true;channelConnected=true;
+  control=channel(actions.input);movement=channel(actions.move);
+  // Optional UDP-like unordered motion: same peer connection, no second handshake.
+  // The reliable Trystero action remains a fallback on browsers where this is unavailable.
+  try{
+    const peer=Object.values(room.getPeers()).find(p=>p.userId===userId&&p.connection);
+    if(peer?.connection){
+      peer.connection.addEventListener('datachannel',e=>{
+        if(e.channel.label!=='arcplay-fast-motion')return;
+        fastMotion=e.channel;
+        fastMotion.bufferedAmountLowThreshold=128;
+        movement=fastMotion;
+        fastMotion.onclose=()=>{fastMotion=null;movement=channel(actions.move);};
+      });
+    }
+  }catch{}
+  setConnection('Anfitrión encontrado','Recibiendo imagen y preparando los controles.');
+  safetyTimer=setInterval(()=>{if(playing)snapshot();},110);
+  pingTimer=setInterval(()=>{if(connected)sendControl({t:'ping',n:performance.now()});},1000);
+  latencyTimer=setInterval(async()=>{
+    if(!room||!hostId)return;
+    try{$('#ping').textContent=Math.round(await room.ping(hostId))+' ms';}catch{}
+  },2700);
+  maybeReady();
 }
-function sayHello(){if(bus&&!connected)void bus.send({t:'hello',from:myId,v:8}).catch(()=>{});}
 async function join(){
   if(joining)return;
-  let code;
-  try{code=ArcSignal.parseCode($('#room-code').value).code;}
+  let info;
+  try{info=ArcSignal.parseCode($('#room-code').value);}
   catch(e){$('#join-error').textContent=e.message;failConnection('Invitación no válida',e.message);return;}
-  joining=true;currentCode=code;$('#join-error').textContent='';$('#join-game').disabled=true;
+  joining=true;currentCode=info.code;$('#join-error').textContent='';$('#join-game').disabled=true;
   try{
-    clearTimers();bus?.close();bus=null;
-    closePeer();hostId='';pendingIce=[];roomServiceReady=false;hostFound=false;offerReceived=false;lastIceState='new';sessionIce=ArcIce.DEFAULTS;
-    setConnection('Conectando a la partida...','Buscando a tu amigo y preparando la transmisión.');
+    clearTimers();const old=room;room=null;if(old)await old.leave();
+    closePeer();hostFound=false;roomServiceReady=false;offerReceived=false;
+    setConnection('Conectando a la partida...','Buscando a tu amigo y preparando el vídeo.');
     topStatus('Conectando');armTimeout();
-    bus=await ArcSignal.SignalBus.connect(code,'guest',message=>{
-      void onSignal(message).catch(()=>failConnection('Error de conexión','No se ha podido completar la conexión. Pulsa Reintentar.'));
-    },ready=>{roomServiceReady=ready;if(ready&&!connected){sayHello();topStatus('Buscando anfitrión');}});
-    sayHello();helloTimer=setInterval(sayHello,1300);
+    room=ArcTrystero.joinRoom({
+      appId:'battlebeats69-oss/arcplay-trystero-v1',password:info.secret,
+      identity:'none',maxUsers:2,
+      relayConfig:{redundancy:5,warnOnRelayFailure:false}
+    },info.room);
+    const input=room.makeAction('input'),move=room.makeAction('move');
+    const feedback=room.makeAction('feedback');feedbackAction=feedback;
+    feedback.onMessage((data,{userId})=>{
+      if(userId!==hostId)return;
+      if(data?.t==='pong'&&Number.isFinite(data.n))$('#ping').textContent=Math.round(performance.now()-data.n)+' ms';
+    });
+    room.onPeerStream((media,{userId,metadata})=>{
+      if(hostId&&userId!==hostId)return;
+      if(metadata?.kind!=='game')return;
+      video.srcObject=media;video.play().catch(()=>{});
+      // A first frame AND a connected control channel are required to show the game.
+      maybeReady();
+    },{replay:true});
+    room.onUserJoin(({userId})=>configurePeer(userId,{input,move}));
+    room.onUserLeave(({userId})=>{
+      if(userId!==hostId)return;
+      closePeer();setConnection('Reconectando...','El anfitrión se ha desconectado.');armTimeout();
+    });
+    room.onError(err=>{
+      if(err.code==='peer-connect-failed')failConnection('Conexión de red bloqueada','Los navegadores se encontraron, pero no pudieron abrir WebRTC. Es necesario TURN o cambiar de red. (NET-ICE)');
+      else if(err.code==='room-full')failConnection('Partida completa','Esta sala ya tiene dos participantes.');
+      else if(err.code==='decrypt-failed')failConnection('Invitación no válida','Los códigos no coinciden. Generad una invitación nueva.');
+    });
     $('#join-panel').classList.add('hidden');
-  }catch(e){failConnection('No se pudo conectar',e.message||'Revisa tu conexión e inténtalo de nuevo.');$('#join-game').disabled=false;}
+  }catch(err){failConnection('Error de conexión',err.message||'Comprueba el enlace y vuelve a intentarlo.');$('#join-game').disabled=false;}
   finally{joining=false;}
 }
 function leaveToCode(){
-  clearTimers();bus?.close();bus=null;closePeer();
+  clearTimers();const old=room;room=null;if(old)void old.leave();closePeer();
   $('#join-panel').classList.remove('hidden');$('#join-game').disabled=false;
-  $('#join-error').textContent='';dismissConnection();topStatus('Sin conectar');
-  $('#room-code').focus();
+  $('#join-error').textContent='';dismissConnection();topStatus('Sin conectar');$('#room-code').focus();
 }
 $('#join-game').addEventListener('click',()=>void join());
 $('#room-code').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();void join();}});
@@ -375,7 +306,7 @@ $('#sound').addEventListener('click',()=>{
   $('#sound').title=soundEnabled?'Silenciar':'Activar sonido';
   video.play().catch(()=>{});
 });
-window.addEventListener('beforeunload',()=>{stopControls();bus?.close();});
+window.addEventListener('beforeunload',()=>{stopControls();void room?.leave();});
 
 // Support both hash-based private invitation links and explicit URL parameters.
 // Remove the secret from the visible URL immediately after reading it.
