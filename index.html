@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>ArcPlay — Invitación a jugar</title>
+  <link rel="stylesheet" href="guest.css">
+</head>
+<body>
+<div class="boot-splash" id="boot-splash" aria-hidden="true">
+  <div class="boot-card">
+    <div class="boot-ring boot-ring-a"></div>
+    <div class="boot-ring boot-ring-b"></div>
+    <div class="boot-logo logo-sheen icon-sheen">
+      <img src="assets/arcplay-symbol.png" alt="ArcPlay">
+    </div>
+    <div class="boot-copy">
+      <img src="assets/arcplay-wordmark.png" alt="arcplay">
+      <span>cargando cliente invitado</span>
+    </div>
+  </div>
+</div>
+<div class="orbit orbit-1"></div><div class="orbit orbit-2"></div>
+<div class="app">
+ <header>
+   <div class="logo">
+     <span class="logo-mark"><img src="assets/arcplay-symbol.png" alt="ArcPlay"></span>
+     <span class="logo-type"><img src="assets/arcplay-wordmark.png" alt="arcplay"><small>navegador &amp; juego compartido</small></span>
+   </div>
+   <div class="header-badge"><span class="status-dot" id="dot"></span><span id="top-status">Sin conectar</span></div>
+ </header>
+ <main>
+  <div class="intro">
+    <div class="hero-logo logo-sheen" aria-hidden="true"><img src="assets/arcplay-lockup.png" alt=""></div>
+    <p class="kicker">INVITACIÓN PRIVADA / PLAYER 02</p>
+    <h1>Tu sitio está <span>listo.</span></h1>
+    <p>La partida se transmite desde el navegador de tu amigo. Tú manejas las teclas del segundo jugador con baja latencia y sin instalar nada extra.</p>
+  </div>
+  <section class="join-panel" id="join-panel">
+    <div class="join-field"><label for="room-code">CÓDIGO DE PARTIDA</label><input id="room-code" autocomplete="off" spellcheck="false" placeholder="Pega aquí el código que te envió tu amigo"></div>
+    <button id="join-game">Unirme a jugar</button>
+  </section>
+  <div id="join-error" class="join-error" role="alert"></div>
+  <section class="screen-frame" aria-label="Pantalla compartida">
+   <div class="video-box" id="video-box"><video id="video" autoplay playsinline muted></video>
+    <div class="waiting" id="waiting"><div class="pulse"><img src="assets/arcplay-symbol.png" alt=""></div><h2 id="waiting-title">Buscando la partida...</h2><p id="waiting-sub">Introduce el código de tu amigo para ver su partida.</p></div>
+   </div>
+   <div class="screen-controls"><div class="indicator"><span class="tiny-dot"></span><span id="conn-status">Esperando vídeo</span></div><div class="screen-right"><span id="ping">— ms</span><button id="sound" class="mini" title="Activar sonido" aria-label="Activar sonido"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4zM17 9l4 6M21 9l-4 6"/></svg></button><button id="fullscreen" class="mini" title="Pantalla completa" aria-label="Pantalla completa"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M4 15v5h5M20 15v5h-5"/></svg></button></div></div>
+  </section>
+  <section class="controls"><div><div class="control-heading"><svg viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="3"/><path d="M7 10h4M9 8v4M16 12h.01M19 10h.01"/></svg><strong>Controles del jugador 2</strong></div><p>Haz clic en activar y usa las teclas indicadas en el juego. Para salir, pulsa el botón de desactivar.</p><div class="keys"><span>↑</span><span>←</span><span>↓</span><span>→</span><span>ENTER</span><span>WASD</span><span>ESPACIO</span></div></div><button id="toggle" class="start" disabled><svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></svg><span id="toggle-label">Esperando conexión</span></button></section>
+  <div id="keyboard-focus" tabindex="-1" aria-label="Área de control del juego"></div>
+  <p class="note" id="note">Solo se envían teclas de juego. No se comparte tu pantalla, ratón ni archivos.</p>
+ </main><footer><span>WEBRTC / LIVE INPUT</span><span>ARCPLAY 0.5 BETA</span></footer>
+</div><script src="signal-bus.js"></script><script src="guest.js"></script>
+</body></html>
