@@ -157,9 +157,5 @@ window.addEventListener('beforeunload',()=>{disablePlay();bus?.close();});
   }
 })();
 
-
-window.addEventListener('load',()=>{
-  const reveal=()=>document.body.classList.add('app-ready');
-  setTimeout(reveal, 1400);
-  document.getElementById('boot-splash')?.addEventListener('click', reveal, {once:true});
-});
+// Remove the one-second intro from the DOM; no ongoing animation while playing.
+setTimeout(() => document.getElementById('boot-splash')?.remove(), 1000);

@@ -1,10 +1,14 @@
-ArcPlay — Invitados 🎮
-Juega a juegos multijugador locales de navegador con un amigo, aunque estéis lejos.
+# ArcPlay · Cliente invitado
 
-Esta es la web para invitados de ArcPlay. Permite ver en directo la partida de un amigo y controlar al segundo jugador con tu propio teclado, sin instalar extensiones ni programas.
-¿Cómo funciona?
-1. El anfitrión abre el juego en Chrome y comparte la pestaña con la extensión ArcPlay.
-2. Envía un enlace privado de invitación.
-3. El invitado abre el enlace en su navegador, pulsa «Unirme a jugar» si es necesario y activa sus teclas.
-4. ¡A jugar! Cada persona controla a su personaje, como si compartieran un teclado.
-La imagen, el sonido y los controles se transmiten mediante WebRTC, priorizando una conexión directa y de baja latencia. No hace falta crear una cuenta.
+Web estática para unirse a partidas compartidas de ArcPlay, sin instalar ninguna extensión.
+
+## Publicar
+
+Sube el contenido de esta carpeta a la raíz del repositorio de GitHub Pages.
+URL actual: https://battlebeats69-oss.github.io/arcplay-invitados/
+
+El anfitrión instala la extensión ArcPlay y comparte una invitación. El invitado abre ese enlace, ve la partida y activa su teclado.
+
+La animación de bienvenida dura **1 segundo**; durante el juego no se ejecutan animaciones decorativas.
+
+Versión beta: algunas conexiones y juegos pueden no ser compatibles.
