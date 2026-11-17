@@ -4,14 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta name="theme-color" content="#070a10">
-  <meta name="description" content="ArcPlay: juega con un amigo en la misma partida desde dos navegadores.">
-  <title>ArcPlay · Unirse a la partida</title>
+  <meta name="theme-color" content="#06080d">
+  <meta name="description" content="ArcPlay: comparte juegos de navegador con un amigo, sin instalar nada como invitado.">
+  <title>ArcPlay · Jugar con amigos</title>
   <link rel="icon" type="image/png" href="assets/arcplay-symbol.png">
   <link rel="stylesheet" href="guest.css">
 </head>
 <body>
-  <!-- La animación de entrada dura exactamente un segundo y no se repite. -->
   <div class="splash" id="boot-splash" aria-hidden="true">
     <div class="splash-inner">
       <div class="splash-symbol"><img src="assets/arcplay-symbol.webp" alt=""></div>
@@ -23,65 +22,69 @@
     <header class="topbar">
       <div class="brand" aria-label="ArcPlay">
         <img class="brand-symbol" src="assets/arcplay-symbol.webp" alt="" width="40" height="40">
-        <img class="brand-wordmark" src="assets/arcplay-wordmark.webp" alt="ArcPlay" width="156" height="46">
+        <img class="brand-wordmark" src="assets/arcplay-wordmark.webp" alt="ArcPlay">
       </div>
       <div class="connection"><span class="status-dot" id="dot"></span><span id="top-status">Sin conectar</span></div>
     </header>
 
     <main>
-      <section class="intro" aria-labelledby="page-title">
-        <p class="eyebrow">JUGADOR 2</p>
-        <h1 id="page-title">Únete a la <span>partida.</span></h1>
-        <p>Una pantalla, dos teclados. Juega a distancia con tu amigo.</p>
+      <section class="intro" id="intro">
+        <p class="eyebrow">REMOTE PLAY / JUGADOR 2</p>
+        <h1>Juega <span>desde lejos.</span></h1>
+        <p>La partida está en el navegador de tu amigo. Tú controlas el segundo jugador.</p>
       </section>
 
       <section class="join-panel" id="join-panel" aria-label="Unirse a una partida">
-        <div class="join-field">
-          <label for="room-code">Código de invitación</label>
-          <input id="room-code" autocomplete="off" spellcheck="false" placeholder="Introduce el código de tu amigo">
-        </div>
-        <button id="join-game" class="primary">Unirme a jugar</button>
+        <div class="join-field"><label for="room-code">Código de invitación</label><input id="room-code" autocomplete="off" spellcheck="false" placeholder="Introduce tu código de invitación"></div>
+        <button id="join-game" class="primary">Conectar</button>
       </section>
       <div id="join-error" class="join-error" role="alert"></div>
 
-      <section class="screen-frame" aria-label="Pantalla compartida">
+      <section class="screen-frame" aria-label="Partida compartida">
         <div class="video-box" id="video-box">
           <video id="video" autoplay playsinline muted></video>
-          <div class="waiting" id="waiting">
-            <img src="assets/arcplay-symbol.webp" alt="" width="50" height="50">
-            <h2 id="waiting-title">Esperando partida</h2>
-            <p id="waiting-sub">Introduce el código para conectar.</p>
+          <div class="waiting" id="waiting" aria-hidden="true">
+            <img src="assets/arcplay-symbol.webp" alt="">
+            <p>Tu partida aparecerá aquí.</p>
           </div>
-        </div>
-        <div class="screen-controls">
-          <div class="indicator"><span class="tiny-dot"></span><span id="conn-status">Esperando vídeo</span></div>
-          <div class="screen-right">
-            <span id="ping">— ms</span>
-            <button id="sound" class="mini" title="Activar sonido" aria-label="Activar sonido">
-              <svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4zM17 9l4 6M21 9l-4 6"/></svg>
-            </button>
-            <button id="fullscreen" class="mini" title="Pantalla completa" aria-label="Pantalla completa">
-              <svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M4 15v5h5M20 15v5h-5"/></svg>
-            </button>
+          <div class="game-hud" id="game-hud">
+            <div class="hud-left"><span class="live-led"></span><span>PARTIDA EN DIRECTO</span><span id="ping">— ms</span></div>
+            <div class="hud-actions"><span class="locked-tip" id="locked-tip"><kbd>Esc</kbd> para liberar ratón</span>
+              <button id="sound" class="icon-button" title="Activar sonido" aria-label="Activar sonido"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4zM17 9l4 6M21 9l-4 6"/></svg></button>
+              <button id="fullscreen" class="icon-button" title="Pantalla completa" aria-label="Pantalla completa"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M4 15v5h5M20 15v5h-5"/></svg></button>
+            </div>
+            <div class="input-dock">
+              <div class="dock-guide" id="mouse-guide"><strong>FPS / RATÓN</strong><span>Activa controles, después captura el ratón. Pulsa <kbd>Esc</kbd> para liberarlo.</span></div>
+              <div class="dock-buttons">
+                <button id="lock-mouse" class="secondary" disabled title="Capturar el ratón para juegos FPS">Capturar ratón</button>
+                <button id="toggle" class="primary" disabled><span id="toggle-label">Esperando conexión</span></button>
+              </div>
+            </div>
           </div>
         </div>
       </section>
-
-      <section class="controls" aria-label="Teclado del jugador 2">
-        <div class="controls-copy">
-          <strong>Tu teclado</strong>
-          <p>Activa tus controles cuando empiece la partida.</p>
-          <div class="keys" aria-hidden="true">
-            <span>↑</span><span>←</span><span>↓</span><span>→</span><span>ENTER</span><span>WASD</span><span>ESPACIO</span>
-          </div>
-        </div>
-        <button id="toggle" class="start" disabled><span id="toggle-label">Esperando conexión</span></button>
-      </section>
+      <p class="note" id="note">El ratón y las teclas solo se enviarán cuando actives los controles. Algunas combinaciones del navegador están reservadas.</p>
       <div id="keyboard-focus" tabindex="-1" aria-label="Área de control del juego"></div>
-      <p class="note" id="note">Solo compartes las teclas que pulses, nunca tu pantalla ni tus archivos.</p>
     </main>
   </div>
+
+  <!-- Bloqueo de acceso al juego hasta tener conexión de vídeo Y controles. -->
+  <section id="connection-screen" class="connection-screen" aria-live="polite" aria-atomic="true" hidden>
+    <div class="connection-center">
+      <div class="connection-mark" id="connection-mark"><span class="connection-ring"></span><img src="assets/arcplay-symbol.webp" alt="ArcPlay"></div>
+      <p class="eyebrow" id="connection-eyebrow">INVITACIÓN RECIBIDA</p>
+      <h2 id="connection-title">Conectando a la partida...</h2>
+      <p id="connection-description">Preparando vídeo y controles.</p>
+      <div class="connection-progress" id="connection-progress"><span></span></div>
+      <div class="connection-actions" id="connection-actions" hidden>
+        <button id="retry-join" class="primary">Reintentar conexión</button>
+        <button id="change-code" class="secondary">Introducir otro código</button>
+      </div>
+    </div>
+  </section>
+
   <script src="signal-bus.js"></script>
+  <script src="input-protocol.js"></script>
   <script src="guest.js"></script>
 </body>
 </html>
